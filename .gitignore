@@ -1,0 +1,17 @@
+# Python
+backend/__pycache__/
+backend/*.pyc
+backend/focusflow_local.db
+backend/.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# IDEs and System files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
