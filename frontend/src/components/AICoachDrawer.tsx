@@ -13,6 +13,7 @@ export default function AICoachDrawer({ isOpen, onClose }: AICoachDrawerProps) {
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [aiStatus, setAiStatus] = useState<{ mode: string; label: string; available: boolean } | null>(null);
   const { user } = useAuth();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -46,6 +47,13 @@ export default function AICoachDrawer({ isOpen, onClose }: AICoachDrawerProps) {
       console.error("Failed to load chat history", e);
     }
   };
+
+  // Load the honest AI engine status so we never fake a "live" badge.
+  useEffect(() => {
+    api.fetchAiStatus()
+      .then(setAiStatus)
+      .catch(() => setAiStatus(null));
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -131,9 +139,10 @@ export default function AICoachDrawer({ isOpen, onClose }: AICoachDrawerProps) {
                   <h3 className="font-semibold text-zinc-100 text-sm flex items-center gap-1.5">
                     FocusFlow Coach <Sparkles size={12} className="text-accent-violet animate-pulse" />
                   </h3>
-                  <p className="text-[10px] text-accent-emerald flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-accent-emerald animate-ping" />
-                    Online & Active
+                  {/* Honest engine status — no fake "live" badge when running the local rules engine */}
+                  <p className={`text-[10px] flex items-center gap-1 ${aiStatus?.mode === 'gemini' ? 'text-accent-emerald' : 'text-zinc-400'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${aiStatus?.mode === 'gemini' ? 'bg-accent-emerald animate-ping' : 'bg-zinc-500'}`} />
+                    {aiStatus ? aiStatus.label : 'Connecting…'}
                   </p>
                 </div>
               </div>

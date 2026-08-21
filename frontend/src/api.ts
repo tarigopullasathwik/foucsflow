@@ -19,6 +19,8 @@ const getHeaders = (user: AuthUser | null) => {
   return headers;
 };
 
+export { API_BASE_URL };
+
 // API Services object
 export const api = {
   // Authentication Sync
@@ -82,6 +84,26 @@ export const api = {
   },
 
   // AI Planner
+  async getSchedule(user: AuthUser | null): Promise<{ date: string; schedule: any[] }> {
+    const res = await fetch(`${API_BASE_URL}/api/ai/schedule`, {
+      method: 'POST',
+      headers: getHeaders(user),
+      body: JSON.stringify({})
+    });
+    if (!res.ok) throw new Error('Failed to fetch daily schedule');
+    return res.json();
+  },
+
+  async saveSchedule(user: AuthUser | null, schedule: any[]): Promise<{ date: string; schedule: any[] }> {
+    const res = await fetch(`${API_BASE_URL}/api/ai/schedule`, {
+      method: 'POST',
+      headers: getHeaders(user),
+      body: JSON.stringify({ schedule })
+    });
+    if (!res.ok) throw new Error('Failed to save daily schedule');
+    return res.json();
+  },
+
   async generateSchedule(user: AuthUser | null): Promise<{ date: string; schedule: any[] }> {
     const res = await fetch(`${API_BASE_URL}/api/ai/schedule`, {
       method: 'POST',
@@ -236,5 +258,21 @@ export const api = {
       headers: getHeaders(user)
     });
     if (!res.ok) throw new Error('Failed to mark notifications as read');
+  },
+
+  // Sent emails (audit trail of welcome / login / security emails sent to the user)
+  async fetchSentEmails(user: AuthUser | null): Promise<any[]> {
+    const res = await fetch(`${API_BASE_URL}/api/emails/sent`, {
+      headers: getHeaders(user)
+    });
+    if (!res.ok) throw new Error('Failed to fetch sent emails');
+    return res.json();
+  },
+
+  // AI engine status (honestly reports gemini vs local rules engine)
+  async fetchAiStatus(): Promise<{ mode: string; label: string; available: boolean }> {
+    const res = await fetch(`${API_BASE_URL}/api/ai/status`);
+    if (!res.ok) throw new Error('Failed to fetch AI status');
+    return res.json();
   }
 };

@@ -32,7 +32,34 @@ def parse_json_safely(text):
         if lines[-1].startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Models sometimes wrap JSON in prose — slice out the outermost
+        # object/array and retry once before giving up.
+        starts = [i for i in (text.find("{"), text.find("[")) if i != -1]
+        ends = [i for i in (text.rfind("}"), text.rfind("]")) if i != -1]
+        if starts and ends:
+            return json.loads(text[min(starts):max(ends) + 1])
+        raise
+
+def _deadline_to_local(deadline_str):
+    """Parse an ISO deadline and convert it to naive local time for comparison.
+
+    The frontend sends UTC ('...Z') strings; storing users' deadlines but
+    comparing them against naive local time silently shifts urgency for
+    anyone not in UTC. Returns None when unparseable.
+    """
+    if not deadline_str:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(deadline_str).replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except (ValueError, TypeError):
+        return None
+
 
 # MOCK/HEURISTIC GENERATION HELPERS
 
@@ -75,8 +102,10 @@ def generate_local_priority(task, workload_count=3):
     
     if deadline_str:
         try:
-            deadline = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
-            now = datetime.now(deadline.tzinfo)
+            deadline = _deadline_to_local(deadline_str)
+            if deadline is None:
+                raise ValueError("unparseable deadline")
+            now = datetime.now()
             time_left = deadline - now
             hours_left = time_left.total_seconds() / 3600.0
             
@@ -144,8 +173,10 @@ def generate_local_risk(task):
         }
         
     try:
-        deadline = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
-        now = datetime.now(deadline.tzinfo)
+        deadline = _deadline_to_local(deadline_str)
+        if deadline is None:
+            raise ValueError("unparseable deadline")
+        now = datetime.now()
         time_left = deadline - now
         hours_left = time_left.total_seconds() / 3600.0
         
@@ -411,34 +442,77 @@ def generate_local_schedule(tasks, preferences, calendar_events=None):
     """
     start_time_str = preferences.get("work_start_time", "09:00")
     end_time_str = preferences.get("work_end_time", "18:00")
-    break_dur = int(preferences.get("daily_break_duration", 15))
-    
-    # Parse start/end times
-    start_hour, start_min = map(int, start_time_str.split(":"))
-    end_hour, end_min = map(int, end_time_str.split(":"))
-    
-    current_time = datetime.now().replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
-    end_time = datetime.now().replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+    try:
+        break_dur = int(preferences.get("daily_break_duration", 15))
+    except (TypeError, ValueError):
+        break_dur = 15
+
+    # Parse start/end times defensively so a bad preference never 500s the planner
+    try:
+        start_h, start_m = str(start_time_str).split(":")[:2]
+        start_hour, start_min = int(start_h), int(start_m)
+    except (ValueError, AttributeError):
+        start_hour, start_min = 9, 0
+    try:
+        end_h, end_m = str(end_time_str).split(":")[:2]
+        end_hour, end_min = int(end_h), int(end_m)
+    except (ValueError, AttributeError):
+        end_hour, end_min = 18, 0
+
+    now = datetime.now()
+    start_dt = now.replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
+    end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+
+    # Overnight work windows: an end time at or before the start means "next day".
+    if end_time <= start_dt:
+        end_time += timedelta(days=1)
+
+    # Don't plan in the past: if today's window is already over, roll to tomorrow.
+    if end_time <= now:
+        start_dt += timedelta(days=1)
+        end_time += timedelta(days=1)
+
+    # Start from the later of work-start or right now (rounded to the next minute).
+    current_time = max(start_dt, now.replace(second=0, microsecond=0))
     
     schedule = []
-    
-    # Filter incomplete tasks
-    active_tasks = [t for t in tasks if t.get("status") != "Completed"]
-    # Sort by priority score
-    active_tasks = sorted(active_tasks, key=lambda x: x.get("priority_score", 50), reverse=True)
-    
+
+    # Filter incomplete tasks and expand into work blocks so multi-hour tasks
+    # are split across consecutive 90-minute focus sessions instead of being
+    # truncated to a single 90-minute block and dropping the remainder.
+    task_queue = []  # list of [task, remaining_minutes]
+    for t in tasks:
+        if t.get("status") == "Completed":
+            continue
+        try:
+            duration = int(t.get("estimated_duration", 60))
+        except (TypeError, ValueError):
+            duration = 60
+        remaining = duration
+        while remaining > 0:
+            block = min(remaining, 90)
+            task_queue.append((t, block))
+            remaining -= block
+
+    # Highest-priority work first
+    task_queue.sort(key=lambda item: item[0].get("priority_score", 50), reverse=True)
+
     task_idx = 0
     work_since_break = 0 # tracks consecutive work minutes
-    
-    while current_time < end_time and task_idx < len(active_tasks):
+
+    while current_time < end_time and task_idx < len(task_queue):
         # check if current time overlaps with any calendar events
         overlap = False
         if calendar_events:
             for e in calendar_events:
+                if not e.get("start_time") or not e.get("end_time"):
+                    continue
                 try:
-                    e_start = datetime.fromisoformat(e["start_time"].replace("Z", "+00:00")).replace(tzinfo=None)
-                    e_end = datetime.fromisoformat(e["end_time"].replace("Z", "+00:00")).replace(tzinfo=None)
-                    
+                    e_start = _deadline_to_local(e.get("start_time"))
+                    e_end = _deadline_to_local(e.get("end_time"))
+                    if e_start is None or e_end is None:
+                        continue
+
                     # If current time is inside the event
                     if e_start <= current_time < e_end:
                         overlap = True
@@ -447,7 +521,7 @@ def generate_local_schedule(tasks, preferences, calendar_events=None):
                         schedule.append({
                             "time_slot": f"{current_time.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}",
                             "task_id": "calendar",
-                            "task_title": f"Calendar: {e['title']}",
+                            "task_title": f"Calendar: {e.get('title', 'Busy')}",
                             "duration": duration,
                             "type": "buffer",
                             "reason": "Imported Google Calendar event. Keep this slot clear."
@@ -455,9 +529,9 @@ def generate_local_schedule(tasks, preferences, calendar_events=None):
                         current_time = slot_end
                         work_since_break = 0
                         break
-                except:
+                except Exception:
                     continue
-                    
+
         if overlap:
             continue
             
@@ -477,18 +551,14 @@ def generate_local_schedule(tasks, preferences, calendar_events=None):
             continue
             
         # Schedule the next task
-        task = active_tasks[task_idx]
-        task_duration = int(task.get("estimated_duration", 60))
-        
-        # Cap task duration in a single block at 90 minutes
-        block_duration = min(task_duration, 90)
-        
+        task, block_duration = task_queue[task_idx]
+
         slot_end = current_time + timedelta(minutes=block_duration)
         if slot_end > end_time:
             # truncate block to fit within work hours
             block_duration = int((end_time - current_time).total_seconds() / 60)
             slot_end = end_time
-            
+
         if block_duration > 15:
             schedule.append({
                 "time_slot": f"{current_time.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}",
@@ -499,7 +569,7 @@ def generate_local_schedule(tasks, preferences, calendar_events=None):
                 "reason": f"High priority task ({task.get('priority_score')} score). Scheduled in peak focus hours."
             })
             work_since_break += block_duration
-            
+
         current_time = slot_end
         task_idx += 1
         

@@ -13,5 +13,6 @@ frontend/.env.local
 # IDEs and System files
 .idea/
 .vscode/
+.zcode/
 .DS_Store
 Thumbs.db

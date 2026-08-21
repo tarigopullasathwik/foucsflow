@@ -168,7 +168,52 @@ def init_sqlite_db():
         read INTEGER DEFAULT 0
     )
     """)
-    
+
+    # Auth sessions (server-issued bearer tokens for real email/password auth)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id TEXT,
+        created_at TEXT,
+        expires_at TEXT
+    )
+    """)
+
+    # Sent emails (audit trail / outbox for console + smtp modes)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sent_emails (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        to_email TEXT,
+        subject TEXT,
+        body TEXT,
+        mode TEXT,        -- 'console' or 'smtp'
+        sent_at TEXT
+    )
+    """)
+
+    # ---- Additive migration: extend users table for real auth ----
+    # Safe ALTER TABLEs wrapped in try/except so they run once and never crash
+    # an already-migrated database.
+    auth_columns = {
+        "password_hash": "TEXT",
+        "provider": "TEXT DEFAULT 'password'",      # 'password' or 'google'
+        "failed_attempts": "INTEGER DEFAULT 0",
+        "locked_until": "TEXT",
+        "created_at": "TEXT",
+        "last_login": "TEXT",
+    }
+    # Read existing columns to avoid duplicate-alter errors
+    cursor.execute("PRAGMA table_info(users)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    for col, coltype in auth_columns.items():
+        if col not in existing_cols:
+            try:
+                cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
+                logger.info(f"Migrated users table: added column '{col}'.")
+            except Exception as e:
+                logger.warning(f"Could not add column '{col}' to users: {e}")
+
     conn.commit()
     conn.close()
     logger.info("SQLite local database tables initialized.")
@@ -508,17 +553,21 @@ def save_user_preferences(user_id, prefs_data):
 # CHAT HISTORY
 
 def get_chat_history(user_id, limit=50):
+    """Return the most recent `limit` messages in chronological order."""
     if USE_FIREBASE:
-        docs = firebase_db.collection("chat_history")\
-            .where("user_id", "==", user_id)\
-            .order_by("timestamp", direction=firestore.Query.ASCENDING)\
-            .limit(limit).get()
-        return [doc.to_dict() for doc in docs]
+        docs = list(firebase_db.collection("chat_history")
+                    .where("user_id", "==", user_id).stream())
+        msgs = sorted((d.to_dict() for d in docs), key=lambda m: m.get("timestamp", ""))
+        return msgs[-limit:]
     else:
         conn = get_sqlite_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM chat_history WHERE user_id = ? ORDER BY timestamp ASC LIMIT ?", (user_id, limit))
-        rows = cursor.fetchall()
+        # Bug fix: previously fetched the OLDEST 50 messages (ASC LIMIT),
+        # so long chats were frozen at their first 50 messages forever.
+        cursor.execute(
+            "SELECT * FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (user_id, limit))
+        rows = list(reversed(cursor.fetchall()))
         conn.close()
         return [dict(r) for r in rows]
 
@@ -618,7 +667,8 @@ def mark_notifications_read(user_id):
     else:
         conn = get_sqlite_conn()
         cursor = conn.cursor()
-        cursor.execute("UPDATE notifications SET read = 1 WHERE user_id = ? AND read = 0", (user_id,))
+        # read=0 AND read=1: resettas any legacy truthy value (e.g. true/1 mixed schemes)
+        cursor.execute("UPDATE notifications SET read = 1 WHERE user_id = ? AND read != 1", (user_id,))
         conn.commit()
         conn.close()
         return True
@@ -697,7 +747,175 @@ def save_analytics_snapshot(user_id, date, snapshot_data):
         snapshot_data["user_id"] = user_id
         snapshot_data["date"] = date
         snapshot_data["created_at"] = now
-        
+
         conn.commit()
         conn.close()
         return snapshot_data
+
+# ============================================================
+# AUTH / SESSION HELPERS (real email+password auth)
+# All SQLite-only; Firebase path keeps using its own token model.
+# ============================================================
+
+def get_user_by_email(email):
+    """Look up a user by email. Returns dict or None."""
+    if USE_FIREBASE:
+        docs = [d.to_dict() for d in firebase_db.collection("users").where("email", "==", email).stream()]
+        return docs[0] if docs else None
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def create_auth_user(user_id, email, name, password_hash, picture=""):
+    """Insert a brand new user row created via email/password registration."""
+    now = datetime.utcnow().isoformat()
+    if USE_FIREBASE:
+        user_data = {
+            "id": user_id, "email": email, "name": name or email.split("@")[0],
+            "picture": picture, "password_hash": password_hash,
+            "provider": "password", "failed_attempts": 0,
+            "locked_until": None, "created_at": now, "last_login": None,
+        }
+        firebase_db.collection("users").document(user_id).set(user_data)
+        return user_data
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO users (id, email, name, picture, password_hash, provider,
+           failed_attempts, locked_until, created_at, last_login)
+           VALUES (?, ?, ?, ?, ?, 'password', 0, NULL, ?, NULL)""",
+        (user_id, email, name or email.split("@")[0], picture, password_hash, now),
+    )
+    conn.commit()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_failed_attempts(user_id, attempts, locked_until=None):
+    """Persist the failed-attempt counter and optional lockout timestamp."""
+    if USE_FIREBASE:
+        firebase_db.collection("users").document(user_id).update(
+            {"failed_attempts": attempts, "locked_until": locked_until})
+        return
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?",
+        (attempts, locked_until, user_id))
+    conn.commit()
+    conn.close()
+
+
+def reset_failed_attempts(user_id):
+    update_failed_attempts(user_id, 0, None)
+
+
+def update_last_login(user_id):
+    now = datetime.utcnow().isoformat()
+    if USE_FIREBASE:
+        firebase_db.collection("users").document(user_id).update({"last_login": now})
+        return
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user_id))
+    conn.commit()
+    conn.close()
+
+
+def save_session_token(token, user_id, expires_at):
+    if USE_FIREBASE:
+        firebase_db.collection("sessions").document(token).set(
+            {"user_id": user_id, "created_at": datetime.utcnow().isoformat(), "expires_at": expires_at})
+        return
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token, user_id, datetime.utcnow().isoformat(), expires_at))
+    conn.commit()
+    conn.close()
+
+
+def get_user_by_token(token):
+    """Validate a session token. Returns the user dict or None if invalid/expired."""
+    if USE_FIREBASE:
+        d = firebase_db.collection("sessions").document(token).get()
+        if not d.exists:
+            return None
+        data = d.to_dict()
+        if data.get("expires_at") and data["expires_at"] < datetime.utcnow().isoformat():
+            return None
+        u = firebase_db.collection("users").document(data["user_id"]).get()
+        return u.to_dict() if u.exists else None
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM sessions WHERE token = ?", (token,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+    sess = dict(row)
+    if sess.get("expires_at") and sess["expires_at"] < datetime.utcnow().isoformat():
+        conn.close()
+        return None
+    cursor.execute("SELECT * FROM users WHERE id = ?", (sess["user_id"],))
+    urow = cursor.fetchone()
+    conn.close()
+    return dict(urow) if urow else None
+
+
+def delete_session_token(token):
+    if USE_FIREBASE:
+        firebase_db.collection("sessions").document(token).delete()
+        return
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# SENT EMAILS (audit / outbox)
+# ============================================================
+
+def save_sent_email(user_id, to_email, subject, body, mode):
+    email_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    if USE_FIREBASE:
+        firebase_db.collection("sent_emails").document(email_id).set(
+            {"id": email_id, "user_id": user_id, "to_email": to_email,
+             "subject": subject, "body": body, "mode": mode, "sent_at": now})
+        return {"id": email_id, "user_id": user_id, "to_email": to_email,
+                "subject": subject, "body": body, "mode": mode, "sent_at": now}
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO sent_emails (id, user_id, to_email, subject, body, mode, sent_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (email_id, user_id, to_email, subject, body, mode, now))
+    conn.commit()
+    conn.close()
+    return {"id": email_id, "user_id": user_id, "to_email": to_email,
+            "subject": subject, "body": body, "mode": mode, "sent_at": now}
+
+
+def get_sent_emails(user_id, limit=20):
+    if USE_FIREBASE:
+        docs = [d.to_dict() for d in firebase_db.collection("sent_emails")
+                .where("user_id", "==", user_id).stream()]
+        return sorted(docs, key=lambda x: x.get("sent_at", ""), reverse=True)[:limit]
+    conn = get_sqlite_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM sent_emails WHERE user_id = ? ORDER BY sent_at DESC LIMIT ?",
+        (user_id, limit))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows

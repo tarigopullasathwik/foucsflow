@@ -7,15 +7,17 @@ import {
   AlertTriangle, 
   Calendar, 
   CheckCircle2, 
-  Clock, 
+  Clock,
   ArrowRight,
   TrendingUp,
   Brain,
   ChevronRight,
-  RotateCw
+  RotateCw,
+  Trash2
 } from 'lucide-react';
 import { useAuth } from '../firebase';
 import { api } from '../api';
+import { useToast } from '../hooks/useToast';
 import TaskModal from '../components/TaskModal';
 
 interface OutletCtx {
@@ -25,11 +27,13 @@ interface OutletCtx {
 export default function Dashboard() {
   const { onOpenCoach } = useOutletContext<OutletCtx>();
   const { user } = useAuth();
+  const toast = useToast();
   
   const [tasks, setTasks] = useState<any[]>([]);
   const [schedule, setSchedule] = useState<any[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [analytics, setAnalytics] = useState<any | null>(null);
+  const [analyticsHistory, setAnalyticsHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   
@@ -37,7 +41,6 @@ export default function Dashboard() {
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<any | null>(null);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (user) {
       loadDashboardData();
@@ -59,27 +62,25 @@ export default function Dashboard() {
 
       setTasks(tasksData);
       setCalendarEvents(calData);
-      
-      // Extract latest analytics snapshot
+      setAnalyticsHistory(analData || []);
+
+      // Extract latest analytics snapshot (real data only)
       if (analData && analData.length > 0) {
         setAnalytics(analData[0]);
       } else {
-        // Trigger a fresh snapshot calculation
+        // Compute a fresh snapshot from the user's CURRENT real tasks.
+        // For a brand-new user with no tasks this honestly returns score 0.
         const freshSnap = await api.snapshotAnalytics(user);
         setAnalytics(freshSnap);
       }
       
       // Try to load latest saved schedule via Flask endpoint proxy
-      const scheduleRes = await fetch(`http://localhost:5000/api/ai/schedule`, {
-        method: 'POST',
-        headers: { 'X-User-Id': user!.uid, 'Content-Type': 'application/json' }
-      });
-      if (scheduleRes.ok) {
-        const sData = await scheduleRes.json();
-        setSchedule(sData.schedule || []);
-      }
+      // Bug fix: use api.getSchedule so the real Bearer token is sent
+      const sData = await api.getSchedule(user);
+      setSchedule(sData.schedule || []);
     } catch (e) {
       console.error("Failed to load dashboard data", e);
+      toast.error("Failed to load dashboard data");
     } finally {
       setLoading(false);
     }
@@ -91,9 +92,10 @@ export default function Dashboard() {
       const result = await api.generateSchedule(user);
       setSchedule(result.schedule);
       await loadDashboardData();
+      toast.success("Daily plan generated successfully!");
     } catch (e) {
       console.error(e);
-      alert("Failed to compile schedule. Check connection.");
+      toast.error("Failed to compile schedule. Check connection.");
     } finally {
       setActionLoading(null);
     }
@@ -104,8 +106,10 @@ export default function Dashboard() {
     try {
       await api.prioritizeTasks(user);
       await loadDashboardData();
+      toast.success("Tasks prioritized successfully!");
     } catch (e) {
       console.error(e);
+      toast.error("Failed to prioritize tasks");
     } finally {
       setActionLoading(null);
     }
@@ -116,8 +120,10 @@ export default function Dashboard() {
     try {
       await api.predictRisk(user);
       await loadDashboardData();
+      toast.success("Risk analysis completed!");
     } catch (e) {
       console.error(e);
+      toast.error("Failed to analyze risks");
     } finally {
       setActionLoading(null);
     }
@@ -134,6 +140,7 @@ export default function Dashboard() {
       await loadDashboardData();
     } catch (e) {
       console.error(e);
+      toast.error("Failed to update task status");
     }
   };
 
@@ -147,7 +154,7 @@ export default function Dashboard() {
   const atRiskList = [...activeTasks]
     .filter(t => (t.risk_percentage || 0) > 35)
     .sort((a, b) => (b.risk_percentage || 0) - (a.risk_percentage || 0));
-
+  
   // AI recommendations generator based on state
   const getAIRecommendations = () => {
     const recs = [];
@@ -182,11 +189,34 @@ export default function Dashboard() {
 
   const aiRecs = getAIRecommendations();
 
+  // ---------- Real, honest metrics ----------
+  const totalTasks = activeTasks.length + completedTasks.length;
+  const hasAnyData = totalTasks > 0 || (analyticsHistory?.length ?? 0) > 0;
+  // Score is read with ?? so a real 0 shows as 0 (not swapped for a fake 72).
+  const score = analytics?.score ?? 0;
+
+  // Real day-over-day delta computed from real history (no hardcoded +4%).
+  // Bug fix: use LOCAL date (not UTC) to match the backend's local snapshot date.
+  const nowDate = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+  const todaySnap =
+    analyticsHistory.find(a => a.date === nowDate) || analytics || { score: 0 };
+  const prevSnap = analyticsHistory.find(a => a.date !== nowDate);
+  let deltaText = '';
+  let deltaIsUp = true;
+  if (prevSnap && typeof prevSnap.score === 'number') {
+    const diff = todaySnap.score - prevSnap.score;
+    deltaIsUp = diff >= 0;
+    deltaText = `${diff >= 0 ? '+' : ''}${diff}% vs yesterday`;
+  } else {
+    // No prior day exists: be honest rather than inventing a trend.
+    deltaText = null as any;
+  }
+
   if (loading) {
     return (
       <div className="flex-1 flex flex-col justify-center items-center h-full p-8 space-y-4">
         <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin" />
-        <p className="text-zinc-500 text-xs font-mono">Running FocusFlow AI optimizations...</p>
+        <p className="text-zinc-500 text-xs font-mono">Loading your productivity data...</p>
       </div>
     );
   }
@@ -248,19 +278,38 @@ export default function Dashboard() {
 
       {/* Highlights Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Productivity Score */}
+        {/* Productivity Score (REAL data only) */}
         <div className="glass-panel p-5 space-y-2 flex flex-col justify-between">
           <div className="flex justify-between items-center text-xs text-zinc-500 font-semibold">
             <span>Productivity Score</span>
-            <TrendingUp size={14} className="text-primary-400" />
+            <TrendingUp size={14} className={score > 0 ? 'text-primary-400' : 'text-zinc-600'} />
           </div>
-          <div className="flex items-baseline gap-2 pt-2">
-            <span className="text-3xl font-extrabold text-white">{analytics?.score || 72}</span>
-            <span className="text-[10px] text-accent-emerald font-semibold bg-accent-emerald/10 px-1.5 py-0.5 rounded-md border border-accent-emerald/20">+4% today</span>
-          </div>
-          <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden">
-            <div className="bg-gradient-to-r from-primary-500 to-accent-violet h-full" style={{ width: `${analytics?.score || 72}%` }} />
-          </div>
+          {hasAnyData ? (
+            <>
+              <div className="flex items-baseline gap-2 pt-2">
+                <span className="text-3xl font-extrabold text-white">{score}</span>
+                {deltaText ? (
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border ${
+                    deltaIsUp
+                      ? 'text-accent-emerald bg-accent-emerald/10 border-accent-emerald/20'
+                      : 'text-rose-400 bg-rose-500/10 border-rose-500/20'
+                  }`}>{deltaText}</span>
+                ) : (
+                  <span className="text-[10px] text-zinc-500 font-semibold bg-zinc-900 px-1.5 py-0.5 rounded-md border border-zinc-800">First day</span>
+                )}
+              </div>
+              <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden">
+                <div className="bg-gradient-to-r from-primary-500 to-accent-violet h-full transition-all duration-500" style={{ width: `${score}%` }} />
+              </div>
+            </>
+          ) : (
+            <div className="pt-2 pb-1 w-full">
+              <span className="text-2xl font-extrabold text-zinc-600">—</span>
+              <p className="text-[10px] text-zinc-500 mt-1 leading-snug">
+                No data yet. Add your first task and complete it to start tracking a real score.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Incomplete Tasks */}
@@ -537,19 +586,30 @@ export default function Dashboard() {
                         {event.start_time ? new Date(event.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'All Day'}
                       </span>
                     </div>
-                    <span className={`text-[8px] uppercase font-bold px-1.5 py-0.5 rounded ${
-                      event.source === 'google' ? 'bg-primary-900/20 text-primary-400 border border-primary-500/20' : 'bg-zinc-800 text-zinc-400'
-                    }`}>
-                      {event.source}
-                    </span>
+
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className={`text-[8px] uppercase font-bold px-1.5 py-0.5 rounded ${
+                        event.source === 'google' ? 'bg-primary-900/20 text-primary-400 border border-primary-500/20' : 'bg-zinc-800 text-zinc-400'
+                      }`}>
+                        {event.source}
+                      </span>
+                      <button
+                        onClick={() => {
+                          // In a real app, we would have a delete event function
+                          console.log('Delete event:', event.id);
+                        }}
+                        className="p-1 text-zinc-650 hover:text-rose-450 transition-colors"
+                        title="Remove Event"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             )}
           </div>
-
         </div>
-
       </div>
 
       {/* Floating AI Coach Assistant Button */}
@@ -570,7 +630,6 @@ export default function Dashboard() {
         onClose={() => { setSelectedTask(null); setIsTaskModalOpen(false); }}
         onSave={loadDashboardData}
       />
-
     </div>
   );
 }

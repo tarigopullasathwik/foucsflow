@@ -32,15 +32,9 @@ export default function PlannerPage() {
   const loadSchedule = async () => {
     setLoading(true);
     try {
-      // Fetch latest schedule
-      const res = await fetch(`http://localhost:5000/api/ai/schedule`, {
-        method: 'POST',
-        headers: { 'X-User-Id': user!.uid, 'Content-Type': 'application/json' }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSchedule(data.schedule || []);
-      }
+      // Bug fix: use api.getSchedule (auth headers + configurable base URL).
+      const data = await api.getSchedule(user);
+      setSchedule(data.schedule || []);
     } catch (e) {
       console.error(e);
     } finally {
@@ -103,18 +97,9 @@ export default function PlannerPage() {
     setActionLoading('save');
     try {
       await api.updatePreferences(user, { sync_calendar: 1 });
-      // Call custom save schedule endpoint
-      const response = await fetch(`http://localhost:5000/api/ai/schedule`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Id': user!.uid
-        },
-        body: JSON.stringify({ schedule })
-      });
-      if (response.ok) {
-        alert("Daily plan successfully locked in. Keep following your flow!");
-      }
+      // Bug fix: use api.saveSchedule (auth headers + configurable base URL).
+      await api.saveSchedule(user, schedule);
+      alert("Daily plan successfully locked in. Keep following your flow!");
     } catch (e) {
       console.error(e);
     } finally {

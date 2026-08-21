@@ -77,13 +77,16 @@ export default function AnalyticsPage() {
   const pendingCounts = history.map(h => h.pending_count);
   const focusHours = history.map(h => h.focus_hours);
 
-  // Line Chart Config - Productivity Scores
+  // Honest analytics: only render charts when there is REAL data.
+  const isEmpty = history.length === 0;
+
+  // Line Chart Config - Productivity Scores (no fabricated fallback data)
   const lineChartData = {
-    labels: chartLabels.length > 0 ? chartLabels : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+    labels: chartLabels,
     datasets: [
       {
         label: 'Productivity Score',
-        data: scores.length > 0 ? scores : [65, 72, 70, 85, 90, 78, 88],
+        data: scores,
         borderColor: '#8b5cf6',
         backgroundColor: 'rgba(139, 92, 246, 0.1)',
         borderWidth: 2,
@@ -108,33 +111,41 @@ export default function AnalyticsPage() {
   const totalCompleted = completedCounts.reduce((acc, curr) => acc + curr, 0);
   const totalPending = pendingCounts.reduce((acc, curr) => acc + curr, 0);
   
+
   const doughnutChartData = {
     labels: ['Completed Tasks', 'Pending Tasks'],
     datasets: [
       {
-        data: totalCompleted > 0 || totalPending > 0 ? [totalCompleted, totalPending] : [15, 5],
+        data: [totalCompleted, totalPending],
         backgroundColor: ['#10b981', '#f43f5e'],
         borderWidth: 0
       }
     ]
   };
 
-  // Bar Chart Config - Focus Hours
+  // Bar Chart Config - Focus Hours (no fabricated fallback data)
   const barChartData = {
-    labels: chartLabels.length > 0 ? chartLabels : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+    labels: chartLabels,
     datasets: [
       {
         label: 'Focus Hours Logged',
-        data: focusHours.length > 0 ? focusHours : [3.5, 4.0, 3.0, 5.5, 6.0, 2.0, 4.5],
+        data: focusHours,
         backgroundColor: '#06b6d4',
         borderRadius: 6
       }
     ]
   };
 
-  // Calculate high performance metrics
-  const avgScore = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 78;
-  const totalFocusHrs = focusHours.length > 0 ? focusHours.reduce((a, b) => a + b, 0).toFixed(1) : '28.5';
+  // Real metrics only — no invented averages.
+  const avgScore = scores.length > 0
+    ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+    : null;
+  const totalFocusHrs = focusHours.length > 0
+    ? focusHours.reduce((a, b) => a + b, 0).toFixed(1)
+    : null;
+  const completionRatio = totalCompleted > 0 || totalPending > 0
+    ? Math.round((totalCompleted / (totalCompleted + totalPending)) * 100)
+    : null;
 
   return (
     <div className="flex-1 p-6 space-y-6 max-w-6xl mx-auto overflow-y-auto">
@@ -148,83 +159,97 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* KPI Cards Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {/* Metric 1 */}
-        <div className="glass-panel p-5 space-y-2">
-          <span className="text-xs text-zinc-500 font-semibold flex items-center gap-1.5">
-            <Zap size={13} className="text-primary-400" />
-            Average Productivity Score
-          </span>
-          <p className="text-3xl font-extrabold text-white">{avgScore}</p>
-          <span className="text-[10px] text-zinc-500">Based on past 7 completed tracking periods</span>
-        </div>
-
-        {/* Metric 2 */}
-        <div className="glass-panel p-5 space-y-2">
-          <span className="text-xs text-zinc-500 font-semibold flex items-center gap-1.5">
-            <Clock size={13} className="text-accent-cyan" />
-            Total Focus Hours
-          </span>
-          <p className="text-3xl font-extrabold text-white">{totalFocusHrs} hrs</p>
-          <span className="text-[10px] text-zinc-500">Accumulated active sessions completed</span>
-        </div>
-
-        {/* Metric 3 */}
-        <div className="glass-panel p-5 space-y-2">
-          <span className="text-xs text-zinc-500 font-semibold flex items-center gap-1.5">
-            <CheckSquare size={13} className="text-accent-emerald" />
-            Task Completion Ratio
-          </span>
-          <p className="text-3xl font-extrabold text-white">
-            {totalCompleted > 0 || totalPending > 0 
-              ? Math.round((totalCompleted / (totalCompleted + totalPending)) * 100) 
-              : 75}%
+      {isEmpty ? (
+        /* Honest empty state — no fabricated charts or numbers */
+        <div className="glass-panel p-12 text-center space-y-4 max-w-lg mx-auto mt-6">
+          <div className="w-12 h-12 rounded-full bg-zinc-900 flex items-center justify-center mx-auto text-zinc-500">
+            <BarChart2 size={22} />
+          </div>
+          <h3 className="text-base font-bold text-zinc-200">No analytics data yet</h3>
+          <p className="text-xs text-zinc-500 leading-relaxed max-w-sm mx-auto">
+            Analytics are generated from your real activity — completed tasks and focus sessions.
+            Add some tasks and complete them, or hit <span className="text-zinc-300 font-semibold">Plan My Day</span> to start building a tracked history.
           </p>
-          <span className="text-[10px] text-zinc-500">Ratio of work completed vs outstanding</span>
         </div>
-      </div>
+      ) : (
+        <>
+          {/* KPI Cards Row */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Metric 1 */}
+            <div className="glass-panel p-5 space-y-2">
+              <span className="text-xs text-zinc-500 font-semibold flex items-center gap-1.5">
+                <Zap size={13} className="text-primary-400" />
+                Average Productivity Score
+              </span>
+              <p className="text-3xl font-extrabold text-white">{avgScore ?? '—'}</p>
+              <span className="text-[10px] text-zinc-500">Based on your tracked days of activity</span>
+            </div>
 
-      {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* LINE CHART: PRODUCTIVITY SCORE PROGRESS (Span 2) */}
-        <div className="lg:col-span-2 glass-panel p-5 space-y-4">
-          <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-            <LineChart size={15} className="text-primary-400" />
-            Daily Score Progress
-          </h3>
-          <div className="pt-2">
-            <Line data={lineChartData} options={lineChartOptions} />
-          </div>
-        </div>
+            {/* Metric 2 */}
+            <div className="glass-panel p-5 space-y-2">
+              <span className="text-xs text-zinc-500 font-semibold flex items-center gap-1.5">
+                <Clock size={13} className="text-accent-cyan" />
+                Total Focus Hours
+              </span>
+              <p className="text-3xl font-extrabold text-white">{totalFocusHrs ?? '—'} {totalFocusHrs !== null && 'hrs'}</p>
+              <span className="text-[10px] text-zinc-500">Accumulated active sessions completed</span>
+            </div>
 
-        {/* DOUGHNUT CHART: TASK RATIOS (Span 1) */}
-        <div className="glass-panel p-5 space-y-4 flex flex-col justify-between">
-          <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-            <CheckSquare size={15} className="text-accent-emerald" />
-            Task Ratio Breakdown
-          </h3>
-          <div className="py-6 flex items-center justify-center max-h-48">
-            <Doughnut data={doughnutChartData} options={{ responsive: true, plugins: { legend: { position: 'bottom' } } }} />
+            {/* Metric 3 */}
+            <div className="glass-panel p-5 space-y-2">
+              <span className="text-xs text-zinc-500 font-semibold flex items-center gap-1.5">
+                <CheckSquare size={13} className="text-accent-emerald" />
+                Task Completion Ratio
+              </span>
+              <p className="text-3xl font-extrabold text-white">
+                {completionRatio !== null ? `${completionRatio}%` : '—'}
+              </p>
+              <span className="text-[10px] text-zinc-500">Ratio of work completed vs outstanding</span>
+            </div>
           </div>
-          <div className="text-[10px] text-center text-zinc-500">
-            Total of {totalCompleted} completed tasks monitored.
-          </div>
-        </div>
 
-        {/* BAR CHART: FOCUS HOURS WORKLOAD (Span 3) */}
-        <div className="lg:col-span-3 glass-panel p-5 space-y-4">
-          <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-            <Clock size={15} className="text-accent-cyan" />
-            Daily Focused Work Hours
-          </h3>
-          <div className="pt-2">
-            <Bar data={barChartData} options={{ responsive: true, scales: { y: { grid: { color: '#18181b' } }, x: { grid: { color: 'transparent' } } } }} />
-          </div>
-        </div>
+          {/* Charts Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-      </div>
+            {/* LINE CHART: PRODUCTIVITY SCORE PROGRESS (Span 2) */}
+            <div className="lg:col-span-2 glass-panel p-5 space-y-4">
+              <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                <LineChart size={15} className="text-primary-400" />
+                Daily Score Progress
+              </h3>
+              <div className="pt-2">
+                <Line data={lineChartData} options={lineChartOptions} />
+              </div>
+            </div>
+
+            {/* DOUGHNUT CHART: TASK RATIOS (Span 1) */}
+            <div className="glass-panel p-5 space-y-4 flex flex-col justify-between">
+              <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                <CheckSquare size={15} className="text-accent-emerald" />
+                Task Ratio Breakdown
+              </h3>
+              <div className="py-6 flex items-center justify-center max-h-48">
+                <Doughnut data={doughnutChartData} options={{ responsive: true, plugins: { legend: { position: 'bottom' } } }} />
+              </div>
+              <div className="text-[10px] text-center text-zinc-500">
+                Total of {totalCompleted} completed tasks monitored.
+              </div>
+            </div>
+
+            {/* BAR CHART: FOCUS HOURS WORKLOAD (Span 3) */}
+            <div className="lg:col-span-3 glass-panel p-5 space-y-4">
+              <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                <Clock size={15} className="text-accent-cyan" />
+                Daily Focused Work Hours
+              </h3>
+              <div className="pt-2">
+                <Bar data={barChartData} options={{ responsive: true, scales: { y: { grid: { color: '#18181b' } }, x: { grid: { color: 'transparent' } } } }} />
+              </div>
+            </div>
+
+          </div>
+        </>
+      )}
 
     </div>
   );

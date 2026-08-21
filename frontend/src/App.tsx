@@ -15,6 +15,7 @@ import PreferencesPage from './pages/PreferencesPage';
 // Component Imports
 import Sidebar from './components/Sidebar';
 import AICoachDrawer from './components/AICoachDrawer';
+import NotificationBell from './components/NotificationBell';
 
 // Protected Route Guard
 function ProtectedLayout() {
@@ -41,6 +42,10 @@ function ProtectedLayout() {
 
       {/* Main Panel Content Area */}
       <main className="flex-1 flex flex-col min-w-0 relative">
+        {/* Top-right notifications bell (floating, above content) */}
+        <div className="fixed top-4 right-4 z-[60]">
+          <NotificationBell />
+        </div>
         <Outlet context={{ onOpenCoach: () => setIsCoachOpen(true) }} />
       </main>
 

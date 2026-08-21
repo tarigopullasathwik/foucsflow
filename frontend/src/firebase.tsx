@@ -27,6 +27,9 @@ const hasFirebaseConfig =
   firebaseConfig.apiKey !== 'YOUR_FIREBASE_API_KEY' &&
   firebaseConfig.apiKey.trim() !== '';
 
+// Backend API base for the real (server-verified) email/password auth flow.
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 let authInstance: Auth | null = null;
 let googleProviderInstance: GoogleAuthProvider | null = null;
 
@@ -119,12 +122,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(u);
       return u;
     } else {
+      // ---- REAL backend auth (server-verified password, real token, emails) ----
+      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Surface the backend's precise message (wrong password, locked, etc.).
+        throw new Error(data.error || 'Invalid email or password.');
+      }
       const u: AuthUser = {
-        uid: 'demo_user',
-        email,
-        displayName: email.split('@')[0].toUpperCase(),
-        photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=demo_user`,
-        token: 'mock-token-12345',
+        uid: data.user.id,
+        email: data.user.email,
+        displayName: data.user.name || email.split('@')[0],
+        photoURL: data.user.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${data.user.id}`,
+        token: data.token,
       };
       localStorage.setItem('focusflow_user', JSON.stringify(u));
       setUser(u);
@@ -147,12 +161,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(u);
       return u;
     } else {
+      // ---- REAL backend registration (bcrypt + welcome email + notification) ----
+      const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Registration failed.');
+      }
       const u: AuthUser = {
-        uid: 'demo_user',
-        email,
-        displayName: name,
-        photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=demo_user`,
-        token: 'mock-token-12345',
+        uid: data.user.id,
+        email: data.user.email,
+        displayName: data.user.name || name || email.split('@')[0],
+        photoURL: data.user.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${data.user.id}`,
+        token: data.token,
       };
       localStorage.setItem('focusflow_user', JSON.stringify(u));
       setUser(u);
@@ -176,26 +200,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(u);
       return u;
     } else {
-      const u: AuthUser = {
-        uid: 'demo_user',
-        email: 'google.demo@focusflow.ai',
-        displayName: 'Alex Carter',
-        photoURL:
-          'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&auto=format&fit=crop',
-        token: 'mock-token-google',
-      };
-      localStorage.setItem('focusflow_user', JSON.stringify(u));
-      setUser(u);
-      return u;
+      // No Firebase project configured: Google OAuth cannot run. Be honest
+      // instead of fabricating a persona.
+      throw new Error(
+        'Google sign-in requires Firebase configuration. Please use email/password sign-up instead, or add Firebase keys in .env'
+      );
     }
   };
 
   const logout = async (): Promise<void> => {
+    const current = user;
     if (!isMock && authInstance) {
       await signOut(authInstance);
-    } else {
-      localStorage.removeItem('focusflow_user');
+    } else if (current?.token) {
+      // Invalidate the real server session token.
+      try {
+        await fetch(`${API_BASE_URL}/api/auth/logout`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${current.token}` },
+        });
+      } catch {
+        /* best-effort */
+      }
     }
+    localStorage.removeItem('focusflow_user');
     setUser(null);
   };
 
@@ -203,7 +231,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!isMock && authInstance) {
       await sendPasswordResetEmail(authInstance, email);
     } else {
-      console.log(`Mock reset password: ${email}`);
+      // Offline mode: there's no mailer-driven reset; tell the user the truth.
+      throw new Error(
+        'Password reset emails require Firebase configuration. For this demo you can re-register with the same email.'
+      );
     }
   };
 

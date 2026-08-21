@@ -52,7 +52,10 @@ export default function LoginPage() {
       navigate('/dashboard');
     } catch (err: any) {
       console.error(err);
-      setMessage({ text: "Google Sign-In failed.", type: 'error' });
+      setMessage({
+        text: err.message || "Google Sign-In failed. Use email/password instead.",
+        type: 'error'
+      });
     } finally {
       setLoading(false);
     }
@@ -85,12 +88,12 @@ export default function LoginPage() {
           </p>
         </div>
 
-        {/* Sandbox alert if in Mock Mode */}
+        {/* Real auth notice */}
         {isMock && (
-          <div className="p-3.5 bg-accent-violet/10 border border-accent-violet/20 rounded-2xl text-[11px] text-accent-violet flex items-center gap-2">
+          <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-[11px] text-emerald-300 flex items-center gap-2">
             <Sparkles size={14} className="shrink-0" />
             <div>
-              <span className="font-bold">Sandbox Mode Activated:</span> Firebase keys are not set. Register/Login instantly with any details.
+              <span className="font-bold">Real authentication active:</span> passwords are verified server-side and you'll receive an email notification on sign-up / sign-in.
             </div>
           </div>
         )}
