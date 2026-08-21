@@ -1,0 +1,12 @@
+Flask==3.0.0
+flask-cors==4.0.0
+bcrypt==5.0.0
+python-dotenv==1.0.1
+
+# Optional — only needed to switch the AI coach from the local rules
+# engine to a live Gemini model (set GEMINI_API_KEY in .env).
+google-generativeai==0.4.1
+
+# Optional — only needed to use Firestore instead of the local SQLite
+# fallback (set FIREBASE_SERVICE_ACCOUNT in .env).
+firebase-admin==7.4.0
