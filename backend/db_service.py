@@ -44,8 +44,9 @@ else:
 LOCAL_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "focusflow_local.db")
 
 def get_sqlite_conn():
-    conn = sqlite3.connect(LOCAL_DB_FILE)
+    conn = sqlite3.connect(LOCAL_DB_FILE, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")   # allow concurrent reads + 1 writer
     return conn
 
 def init_sqlite_db():
@@ -252,13 +253,18 @@ def get_or_create_user(user_id, email, name=None, picture=None):
             "name": name or email.split('@')[0],
             "picture": picture or ""
         }
+        # INSERT OR IGNORE is atomic – safe against race conditions and
+        # duplicate e-mail addresses on the same or different user_ids.
         cursor.execute(
-            "INSERT INTO users (id, email, name, picture) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO users (id, email, name, picture) VALUES (?, ?, ?, ?)",
             (user_data["id"], user_data["email"], user_data["name"], user_data["picture"])
         )
         conn.commit()
+        # Re-fetch so we always return whatever row is actually in the DB.
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
         conn.close()
-        return user_data
+        return dict(row) if row else user_data
 
 # TASK CRUD
 
